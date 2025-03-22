@@ -2,6 +2,8 @@ import numpy as np
 import pinocchio as pin
 import os
 from pathlib import Path
+from pinocchio.visualize import RVizVisualizer
+
 
 
 ENDEF_FRAME_ID = 87
@@ -22,6 +24,8 @@ class PinocchioTest():
         self.data = None
         self.geom_model = None
         self.geom_data = None
+        np.set_printoptions(suppress=True)
+        
 
     def functionality(self):
 
@@ -30,7 +34,16 @@ class PinocchioTest():
         self.fromFile()
 
 
+
+
         q = self.getQ()
+
+        # viz = RVizVisualizer(self.model)
+
+        # # Initialize the viewer.
+        # viz.initViewer()
+        # viz.loadViewerModel("pinocchio")
+        # viz.display(q)
 
         self.calculate_fk_jacobian(q)
         
@@ -40,14 +53,14 @@ class PinocchioTest():
         # TASK 3
         endeff_j = pin.getFrameJacobian(self.model, self.data, ENDEF_FRAME_ID, pin.WORLD)
         # print(f"\n Frame of endeffector \n {self.data.oMf[ENDEF_FRAME_ID]}")
-        # print(f"\n Jacobian of endeffector \n {np.round(endeff_j,decimals = 2)}")
-        # print(f"\n Jocabian of arm tool frame \n {np.round(pin.computeFrameJacobian(model, self.data, q, 73, pin.WORLD), decimals=2)}")
+        # print(f"\n Jacobian of endeffector \n {endeff_j}")
+        # print(f"\n Jocabian of arm tool frame \n {pin.computeFrameJacobian(model, self.data, q, 73, pin.WORLD)}")
 
 
         # TASK 4
         # Add collisition pairs
         self.geom_model.addAllCollisionPairs()
-        print(f"num collision pairs - initial: {len(self.geom_model.collisionPairs)}")
+        # print(f"num collision pairs - initial: {len(self.geom_model.collisionPairs)}")
         
         self.generate_data()
 
@@ -55,16 +68,49 @@ class PinocchioTest():
         pin.computeCollisions(self.model, self.data, self.geom_model, self.geom_data, q, False)
         
         # Print the status of collision for all collision pairs
-        self.log_no_collision()
-        self.log_collisions()
+        # self.log_no_collision()
+        # self.log_collisions()
         
         # Compute for a single pair of collision
         pin.updateGeometryPlacements(self.model, self.data, self.geom_model, self.geom_data, q)
         pin.computeCollision(self.geom_model, self.geom_data, 0)
         cr = self.geom_data.collisionResults[0]
-        print(f"Collision for collision pair 0 is: {cr.isCollision()}")
+        # print(f"Collision for collision pair 0 is: {cr.isCollision()}")
+        # print(self.model.njoints)
+        # print(self.model.names[20])
 
 
+
+        # self.log_joint_effort_limits()
+
+        # CALCULATING JOINT TORQUES FOR A GIVEN CONFIGURATION AND Fext
+
+        # When fext = 0, joint torque is purely due to gravity
+
+        zero_payload_tau = self.grav_tau(q)
+                # This is equivalent to:
+                # f = self.get_null_force()
+                # zero_payload_tau = self.static_payload_torque(q,f) # also can be called gravity torque 
+
+        
+
+        f = self.get_null_force()
+        f[self.model.frames[ENDEF_FRAME_ID].parentJoint] = pin.Force(np.array([0.0,0.0,-100,0.0,0.0,0.0]))
+
+        payload_torque = self.static_payload_torque(q,f)
+
+        print("Gravity torque:")
+        self.log_tau(zero_payload_tau)
+
+        print("Payload Torque for given load")
+        self.log_force()
+        self.log_tau(payload_torque)
+
+
+        # ACCOUNTING EFFORT LIMITS
+
+        # self.log_joint_effort_limits()
+        
 
     def extractModelDataGeomGeomData(self, msg):
 
@@ -84,7 +130,6 @@ class PinocchioTest():
     
     def fromFile(self):
         os.system(f'xacro {xacro_file} > {urdf_file}')
-        # os.system(f'xacro {xacro_file} > {urdf_file}')
         self.model = pin.buildModelFromUrdf(urdf_file)
         self.geom_model = pin.buildGeomFromUrdf(self.model, urdf_file, pin.GeometryType.COLLISION)
         self.generate_data()
@@ -98,10 +143,11 @@ class PinocchioTest():
         if q_in is not None:
             q = q_in
         elif zeros:
-            q = np.zeros(16)
+            q = np.zeros(self.model.nq)
         else:
             # Sample a random configuration
-            q = pin.randomConfiguration(self.model)
+            # q = pin.randomConfiguration(self.model)
+            q = np.random.rand(self.model.nq)*6.28-3.14
 
         if log:
             print(f"Using configuration q: {q.T}")
@@ -141,6 +187,30 @@ class PinocchioTest():
             cp = self.geom_model.collisionPairs[k]
             if cr.isCollision():
                 print(f"collision pair: {cp.first} , {cp.second} , - collision: {cr.isCollision()}")
+
+    def log_joint_effort_limits(self):
+        print(self.model.effortLimit)
+
+    def log_tau(self,tau):
+        for i in range(self.model.nv):
+            if tau[i]!=0:
+                print(f"Joint {i} with torque {tau[i]}")
+
+    def log_force(self):
+        for i in range(self.model.njoints):
+            if (self.data.of[i].linear != self.get_null_force()[i].linear).any or (self.data.of[i].angular != self.get_null_force()[i].angular).any:
+                print(f"Joint {i} with force {self.data.of[i]}")
+
+    def static_payload_torque(self,q,f):
+        pin.rnea(self.model, self.data, q, np.zeros(self.model.nv), np.zeros(self.model.nv),f)
+        return self.data.tau
+    
+    def grav_tau(self,q):
+        f = [pin.Force(np.zeros(6)) for _ in range(self.model.njoints)]
+        return self.static_payload_torque(q,f) 
+    
+    def get_null_force(self):
+        return [pin.Force(np.zeros(6)) for _ in range(self.model.njoints)]
 
 
 
