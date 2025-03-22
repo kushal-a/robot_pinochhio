@@ -1,30 +1,34 @@
-import rclpy
 import numpy as np
-from rclpy.node import Node
-from rclpy.qos import QoSProfile, DurabilityPolicy
-from std_msgs.msg import String
-from xml.etree.ElementTree import XML, fromstring
 import pinocchio as pin
+import os
+from pathlib import Path
 
 
 ENDEF_FRAME_ID = 87
 
-class PinocchioTest(Node):
+tiago_robot_dir = "/home/kushal/colcon_ws/src/tiago_robot"
+tiago_desc_dir = tiago_robot_dir + "/tiago_description"
+xacro_dir = tiago_desc_dir + "/robots"
+xacro_file = xacro_dir + "/tiago.urdf.xacro"
+meshes_dir = tiago_desc_dir + "/meshes"
+urdf_file = Path(__file__).parent.parent/"resource/tiago.urdf"
+ 
+
+class PinocchioTest():
 
     def __init__(self):
-        super().__init__('pinocchio_test_node')
-        self.subscription = self.create_subscription(String,'/robot_description',self.listener_callback,QoSProfile(durability=DurabilityPolicy.TRANSIENT_LOCAL,depth=1))
-        self.subscription  # prevent unused variable warning
-
+        
         self.model = None
         self.data = None
         self.geom_model = None
         self.geom_data = None
 
-    def listener_callback(self, msg):
+    def functionality(self):
 
         # TASK 1
-        self.extractModelDataGeomGeomData(msg)
+        # self.extractModelDataGeomGeomData(msg)
+        self.fromFile()
+
 
         q = self.getQ()
 
@@ -35,14 +39,15 @@ class PinocchioTest(Node):
 
         # TASK 3
         endeff_j = pin.getFrameJacobian(self.model, self.data, ENDEF_FRAME_ID, pin.WORLD)
-        # self.get_logger().info(f"\n Frame of endeffector \n {self.data.oMf[ENDEF_FRAME_ID]}")
-        # self.get_logger().info(f"\n Jacobian of endeffector \n {np.round(endeff_j,decimals = 2)}")
-        # self.get_logger().info(f"\n Jocabian of arm tool frame \n {np.round(pin.computeFrameJacobian(model, self.data, q, 73, pin.WORLD), decimals=2)}")
+        # print(f"\n Frame of endeffector \n {self.data.oMf[ENDEF_FRAME_ID]}")
+        # print(f"\n Jacobian of endeffector \n {np.round(endeff_j,decimals = 2)}")
+        # print(f"\n Jocabian of arm tool frame \n {np.round(pin.computeFrameJacobian(model, self.data, q, 73, pin.WORLD), decimals=2)}")
+
 
         # TASK 4
         # Add collisition pairs
         self.geom_model.addAllCollisionPairs()
-        self.get_logger().info(f"num collision pairs - initial: {len(self.geom_model.collisionPairs)}")
+        print(f"num collision pairs - initial: {len(self.geom_model.collisionPairs)}")
         
         self.generate_data()
 
@@ -57,7 +62,7 @@ class PinocchioTest(Node):
         pin.updateGeometryPlacements(self.model, self.data, self.geom_model, self.geom_data, q)
         pin.computeCollision(self.geom_model, self.geom_data, 0)
         cr = self.geom_data.collisionResults[0]
-        self.get_logger().info(f"Collision for collision pair 0 is: {cr.isCollision()}")
+        print(f"Collision for collision pair 0 is: {cr.isCollision()}")
 
 
 
@@ -66,18 +71,27 @@ class PinocchioTest(Node):
         model = pin.buildModelFromXML(msg.data)
 
         if model is not None:
-            self.get_logger().info("Successfully retrieved model with name: " + model.name)
+            print("Successfully retrieved model with name: " + model.name)
             self.model = model
         else:
-            self.get_logger().info("Failed to generate model")
+            print("Failed to generate model")
 
         self.geom_model = pin.buildGeomFromUrdfString(model, msg.data, pin.GeometryType.COLLISION)
 
-        self.get_logger().info(f"Found {self.geom_model.ngeoms} geometry objects")
-
         # Create data required by the algorithms
+        self.data = self.model.createData()
+        self.geom_data = pin.GeometryData(self.geom_model)
+    
+    def fromFile(self):
+        os.system(f'xacro {xacro_file} > {urdf_file}')
+        # os.system(f'xacro {xacro_file} > {urdf_file}')
+        self.model = pin.buildModelFromUrdf(urdf_file)
+        self.geom_model = pin.buildGeomFromUrdf(self.model, urdf_file, pin.GeometryType.COLLISION)
         self.generate_data()
 
+    def generate_data(self):
+        self.data = self.model.createData()
+        self.geom_data = pin.GeometryData(self.geom_model)
     
     def getQ(self, q_in = None, zeros = False, log = True):
 
@@ -90,25 +104,21 @@ class PinocchioTest(Node):
             q = pin.randomConfiguration(self.model)
 
         if log:
-            self.get_logger().info(f"Using configuration q: {q.T}")
+            print(f"Using configuration q: {q.T}")
 
         return q
-    
-    def generate_data(self):
-        self.data = self.model.createData()
-        self.geom_data = pin.GeometryData(self.geom_model)
 
     def log_joint_names(self):
         for i in range(len(self.model.names)):
-            self.get_logger().info(f"\n Joint with joint id {i} is {self.model.names[i]}")
+            print(f"\n Joint with joint id {i} is {self.model.names[i]}")
 
     def log_transforms(self):
         for oMi, name in zip(self.data.oMi,self.model.names):
-            self.get_logger().info(f"\n Transform for joint {name} is: \n {oMi.homogeneous}")
+            print(f"\n Transform for joint {name} is: \n {oMi.homogeneous}")
 
     def log_frame_names(self):
         for i in range(len(self.model.frames)):
-            self.get_logger().info(f"\n Frame with frame id {i} is {self.model.frames[i].name}")
+            print(f"\n Frame with frame id {i} is {self.model.frames[i].name}")
 
     def calculate_fk_jacobian(self,q):
         # Perform the forward kinematics over the kinematic tree
@@ -116,24 +126,21 @@ class PinocchioTest(Node):
         pin.updateFramePlacements(self.model, self.data)
         pin.computeJointJacobians(self.model, self.data, q)
         pin.updateFramePlacements(self.model, self.data)
-
+    
     def log_no_collision(self):
         n = 0
         for k in range(len(self.geom_model.collisionPairs)):
             cr = self.geom_data.collisionResults[k]
             if cr.isCollision():
                 n = n+1
-        self.get_logger().info(f"Total number of collisions found: {n}")
+        print(f"Total number of collisions found: {n}")
 
     def log_collisions(self):
         for k in range(len(self.geom_model.collisionPairs)):
             cr = self.geom_data.collisionResults[k]
             cp = self.geom_model.collisionPairs[k]
             if cr.isCollision():
-                self.get_logger().info(f"collision pair: {cp.first} , {cp.second} , - collision: {cr.isCollision()}")
-
-    
-    
+                print(f"collision pair: {cp.first} , {cp.second} , - collision: {cr.isCollision()}")
 
 
 
@@ -141,17 +148,10 @@ class PinocchioTest(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
 
     pin_test = PinocchioTest()
+    pin_test.functionality()
 
-    rclpy.spin(pin_test)
-
-    # Destroy the node explicitly
-    # (optional - otherwise it will be done automatically
-    # when the garbage collector destroys the node object)
-    pin_test.destroy_node()
-    rclpy.shutdown()
 
 
 if __name__ == '__main__':
