@@ -32,7 +32,7 @@ class PinocchioTest():
         # TASK 1
         # self.extractModelDataGeomGeomData(msg)
         self.fromFile()
-
+        # self.model.saveToText("script_parsed.txt")
 
 
 

@@ -1,5 +1,6 @@
 import rclpy
 import numpy as np
+from numpy.linalg import norm, solve
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy
 from std_msgs.msg import String
@@ -20,54 +21,181 @@ class PinocchioTest(Node):
         self.data = None
         self.geom_model = None
         self.geom_data = None
+        np.set_printoptions(suppress=True)
+
+
+        # Uncomment to make calculations independent of data retrieval
+        timer_period = 1  # seconds
+        self.timer = self.create_timer(timer_period, self.timer_callback)
 
     def listener_callback(self, msg):
 
         # TASK 1
         self.extractModelDataGeomGeomData(msg)
+        # self.model.saveToText("node_parsed.txt")
+
+    def timer_callback(self):
 
         q = self.getQ()
-
         self.calculate_fk_jacobian(q)
         
         # TASK 2
         # self.log_transforms()
 
         # TASK 3
-        endeff_j = pin.getFrameJacobian(self.model, self.data, ENDEF_FRAME_ID, pin.WORLD)
+        #endeff_j = pin.getFrameJacobian(self.model, self.data, ENDEF_FRAME_ID, pin.WORLD)
         # self.get_logger().info(f"\n Frame of endeffector \n {self.data.oMf[ENDEF_FRAME_ID]}")
         # self.get_logger().info(f"\n Jacobian of endeffector \n {np.round(endeff_j,decimals = 2)}")
         # self.get_logger().info(f"\n Jocabian of arm tool frame \n {np.round(pin.computeFrameJacobian(model, self.data, q, 73, pin.WORLD), decimals=2)}")
 
         # TASK 4
-        # Add collisition pairs
-        self.geom_model.addAllCollisionPairs()
-        self.get_logger().info(f"num collision pairs - initial: {len(self.geom_model.collisionPairs)}")
+        # # Add collisition pairs
+        # self.geom_model.addAllCollisionPairs()
+        # self.get_logger().info(f"num collision pairs - initial: {len(self.geom_model.collisionPairs)}")
+        #
+        # self.generate_data()
+        #
+        # # Compute all the collisions
+        # pin.computeCollisions(self.model, self.data, self.geom_model, self.geom_data, q, False)
+        #
+        # # Print the status of collision for all collision pairs
+        # self.log_nos_collision()
+        # self.log_collisions()
+        #
+        # # Compute for a single pair of collision
+        # pin.updateGeometryPlacements(self.model, self.data, self.geom_model, self.geom_data, q)
+        # pin.computeCollision(self.geom_model, self.geom_data, 0)
+        # cr = self.geom_data.collisionResults[0]
+        # self.get_logger().info(f"Collision for collision pair 0 is: {cr.isCollision()}")
+
+        # CALCULATING JOINT TORQUES FOR A GIVEN CONFIGURATION AND Fext
+        #
+        # When fext = 0, joint torque is purely due to gravity
+        #
+        # zero_payload_tau = self.grav_tau(q)
+        #         # This is equivalent to:
+        #         # f = self.get_null_force()
+        #         # zero_payload_tau = self.tau_qFext(q,f) # also can be called gravity torque 
+        #
+        #
+        #
+        # payload_torque = self.tau_qPayload(q,100)
+        #
+        # print("Gravity torque:")
+        # self.log_tau(zero_payload_tau)
+        #
+        # print("Payload Torque for given load")
+        # self.log_force()
+        # self.log_tau(payload_torque)
+
+
+        # MAXIMUM PAYLOAD FOR GIVEN CONFIGURATION
+
+        payload, tau = self.calculate_max_payload(q)
+
+
+
+            
+
+
+
+    # DATA HANDLING METHODS
+    def calculate_fk_jacobian(self,q):
+        # Perform the forward kinematics over the kinematic tree
+        pin.forwardKinematics(self.model, self.data, q)   
+        pin.updateFramePlacements(self.model, self.data)
+        pin.computeJointJacobians(self.model, self.data, q)
+        pin.updateFramePlacements(self.model, self.data)
+
+    def calculate_max_payload(self,q,F_est = 500,F_err = 1,log = True):
+
+        if self.feasible_payload(q,F_est):
+            while self.feasible_payload(q,F_est):
+                F_est = 2*F_est
+            lb = F_est/2
+            ub = F_est
+        else:
+            while not self.feasible_payload(q,F_est):
+                F_est = F_est/2
+                if F_est<F_err:
+                    return 0, self.grav_tau(q)
+            lb = F_est
+            ub = F_est*2
+
+        while (ub-lb)>F_err:
+            mid = (lb+ub)/2
+            if self.feasible_payload(q,mid):
+                lb = mid
+            else:
+                ub = mid
+        f_max = (lb+ub)/2
+        tau = self.tau_qPayload(q,f_max)
+
+        if log:
+            self.get_logger().info(f"Max payload for given configuration is {f_max}. \n Torques required for these are: value [max]")
+            for i in range(self.model.nv):
+                self.get_logger().info(f"Joint with Joint ID {i} with torque {np.round(tau[i],decimals=2)} [{self.model.effortLimit[i]}]")
+
+        return f_max, tau
+
+    def getQ(self, q_in = None, zeros = False, log = True):
+
+        if q_in is not None:
+            q = q_in
+        elif zeros:
+            q = np.zeros(self.model.nq)
+        else:
+            # Sample a random configuration
+            # q = pin.randomConfiguration(self.model)
+            q = np.random.rand(self.model.nq)*6.28-3.14
+
+        if log:
+            self.get_logger().info(f"Using configuration q:\n {q}")
+
+        return q
+
+    def tau_qFext(self,q,fext):
+        pin.rnea(self.model, self.data, q, np.zeros(self.model.nv), np.zeros(self.model.nv),fext)
+        return self.data.tau
+    
+    def grav_tau(self,q):
+        f = [pin.Force(np.zeros(6)) for _ in range(self.model.njoints)]
+        return self.tau_qFext(q,f) 
+    
+    def get_null_force(self):
+        return [pin.Force(np.zeros(6)) for _ in range(self.model.njoints)]
+
+    def payload_joint_force(self,payload):
+        f = self.get_null_force()
+        f[self.model.frames[ENDEF_FRAME_ID].parentJoint] = pin.Force(np.array([0.0,0.0,-payload,0.0,0.0,0.0]))
+        return f
+    
+    def tau_qPayload(self,q,payload):
+        f = self.payload_joint_force(payload)
+        return self.tau_qFext(q,f)
         
-        self.generate_data()
+    def tau_within_limit(self, tau):
+        limits = self.model.effortLimit
+        out = True
+        for i in range(self.model.nv):
+            if abs(tau[i])>limits[i]:
+                out = False
+                break
+        return out
 
-        # Compute all the collisions
-        pin.computeCollisions(self.model, self.data, self.geom_model, self.geom_data, q, False)
-        
-        # Print the status of collision for all collision pairs
-        self.log_no_collision()
-        self.log_collisions()
-        
-        # Compute for a single pair of collision
-        pin.updateGeometryPlacements(self.model, self.data, self.geom_model, self.geom_data, q)
-        pin.computeCollision(self.geom_model, self.geom_data, 0)
-        cr = self.geom_data.collisionResults[0]
-        self.get_logger().info(f"Collision for collision pair 0 is: {cr.isCollision()}")
-
-
-
+    def feasible_payload(self, q, payload):
+        tau = self.tau_qPayload(q,payload)
+        return self.tau_within_limit(tau)
+    
+    # DATA GENERATION METHODS
     def extractModelDataGeomGeomData(self, msg):
 
         model = pin.buildModelFromXML(msg.data)
 
         if model is not None:
-            self.get_logger().info("Successfully retrieved model with name: " + model.name)
-            self.model = model
+            if model != self.model:
+                self.get_logger().info("Successfully retrieved model with name: " + model.name)
+                self.model = model
         else:
             self.get_logger().info("Failed to generate model")
 
@@ -78,26 +206,11 @@ class PinocchioTest(Node):
         # Create data required by the algorithms
         self.generate_data()
 
-    
-    def getQ(self, q_in = None, zeros = False, log = True):
-
-        if q_in is not None:
-            q = q_in
-        elif zeros:
-            q = np.zeros(16)
-        else:
-            # Sample a random configuration
-            q = pin.randomConfiguration(self.model)
-
-        if log:
-            self.get_logger().info(f"Using configuration q: {q.T}")
-
-        return q
-    
     def generate_data(self):
         self.data = self.model.createData()
         self.geom_data = pin.GeometryData(self.geom_model)
 
+    #LOGGING METHODS
     def log_joint_names(self):
         for i in range(len(self.model.names)):
             self.get_logger().info(f"\n Joint with joint id {i} is {self.model.names[i]}")
@@ -110,14 +223,7 @@ class PinocchioTest(Node):
         for i in range(len(self.model.frames)):
             self.get_logger().info(f"\n Frame with frame id {i} is {self.model.frames[i].name}")
 
-    def calculate_fk_jacobian(self,q):
-        # Perform the forward kinematics over the kinematic tree
-        pin.forwardKinematics(self.model, self.data, q)   
-        pin.updateFramePlacements(self.model, self.data)
-        pin.computeJointJacobians(self.model, self.data, q)
-        pin.updateFramePlacements(self.model, self.data)
-
-    def log_no_collision(self):
+    def log_nos_collision(self):
         n = 0
         for k in range(len(self.geom_model.collisionPairs)):
             cr = self.geom_data.collisionResults[k]
@@ -132,12 +238,19 @@ class PinocchioTest(Node):
             if cr.isCollision():
                 self.get_logger().info(f"collision pair: {cp.first} , {cp.second} , - collision: {cr.isCollision()}")
 
-    
-    
+    def log_joint_effort_limits(self):
+        for i in range(self.model.nv):
+            self.get_logger().info(f"Joint with Joint ID {i} with limiting torque {self.model.effortLimit[i]}")
 
+    def log_tau(self,tau):
+        for i in range(self.model.nv):
+            if tau[i]!=0:
+                self.get_logger().info(f"Joint with Joint ID {i} with torque {tau[i]}")
 
-
-        
+    def log_force(self):
+        for i in range(self.model.njoints):
+            if (self.data.of[i].linear != self.get_null_force()[i].linear).any or (self.data.of[i].angular != self.get_null_force()[i].angular).any:
+                self.get_logger().info(f"Joint with Joint ID {i} with force {self.data.of[i]}")
 
 
 def main(args=None):
