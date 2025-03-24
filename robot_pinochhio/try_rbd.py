@@ -68,34 +68,15 @@ class PinocchioTest(Node):
         # cr = self.geom_data.collisionResults[0]
         # self.get_logger().info(f"Collision for collision pair 0 is: {cr.isCollision()}")
 
-        # CALCULATING JOINT TORQUES FOR A GIVEN CONFIGURATION AND Fext
-        #
-        # When fext = 0, joint torque is purely due to gravity
-        #
-        # zero_payload_tau = self.grav_tau(q)
-        #         # This is equivalent to:
-        #         # f = self.get_null_force()
-        #         # zero_payload_tau = self.tau_qFext(q,f) # also can be called gravity torque 
-        #
-        #
-        #
-        # payload_torque = self.tau_qPayload(q,100)
-        #
-        # print("Gravity torque:")
-        # self.log_tau(zero_payload_tau)
-        #
-        # print("Payload Torque for given load")
-        # self.log_force()
-        # self.log_tau(payload_torque)
-
 
         # MAXIMUM PAYLOAD FOR GIVEN CONFIGURATION
 
         payload, tau = self.calculate_max_payload(q)
 
+        # TORQUE LIMITS REQUIRED FOR GIVEN PAYLOAD
 
-
-            
+        tau = self.tau_qPayload(payload)
+        self.log_tau(tau)
 
 
 
